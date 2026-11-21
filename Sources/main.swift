@@ -18,10 +18,12 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
     var discovered = Set<String>()
     var excluded = Set<String>()
     var observed: [Listener] = []
-    var live: [Listener] { observed.filter { containsProject($0.cwd, root: root) } }
-    var projectDirs: Set<String> {
-        Set(known.keys.filter { containsProject($0, root: root) }).union(discovered.subtracting(excluded))
-    }
+    private(set) var live: [Listener] = []
+    private(set) var stopped: [String] = []
+    private var catalogDirs: [String] = []
+    private(set) var scripts: [String: [String]] = [:]
+    private var catalogID = UUID()
+    private(set) var stopping = Set<UInt64>()
     var scanID = UUID()
     @Published var history = false
     let defaults = UserDefaults.standard
@@ -53,6 +55,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
             let host = String(endpoint.address[..<split]).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
             let route = try LocalRoute(address: address, target: host, port: port, preservePort: !retry)
             routes[key] = route
+            objectWillChange.send()
             route.start { [weak self, weak route] result in
                 guard let self, let route, self.routes[key] === route else { return }
                 switch result {
@@ -62,11 +65,17 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
                     NSWorkspace.shared.open(url)
                 case .failure(let error):
                     self.routes.removeValue(forKey: key)?.stop()
+                    self.objectWillChange.send()
                     if retry { _ = self.alert("局域网地址打开失败", error.localizedDescription) }
                     else { self.openEndpoint(endpoint, service: service, retry: true) }
                 }
             }
         } catch { _ = alert("局域网地址打开失败", error.localizedDescription) }
+    }
+    func isOpening(_ endpoint: Endpoint, service: Listener) -> Bool {
+        guard endpoint.local, let address = ips.first else { return false }
+        let key = RouteKey(pid: service.pid, birth: service.birth, socket: endpoint.address, address: address)
+        return routes[key] != nil && routeURLs[key] == nil
     }
     func displayedAddress(_ endpoint: Endpoint, service: Listener) -> String {
         guard endpoint.local, let address = ips.first, let split = endpoint.address.lastIndex(of: ":") else { return endpoint.address }
@@ -116,6 +125,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
     @objc func togglePanel() {
         if panel.isVisible { panel.orderOut(nil); return }
         showPanel()
+        rebuildCatalog(reloadScripts: true)
         refresh()
     }
     func windowDidResignKey(_ notification: Notification) { panel.orderOut(nil) }
@@ -123,20 +133,24 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
     func selectRoot(_ folder: String?) {
         root = folder.map(canonical)
         defaults.set(root, forKey: "workspace")
+        catalogID = UUID()
         discovered = []
+        catalogDirs = []
+        scripts = [:]
+        synchronizeLive()
         discover()
-        updateCount()
+        objectWillChange.send()
     }
     func discover() {
         scanID = UUID()
         let request = scanID
-        guard let root else { return }
+        guard let root else { rebuildCatalog(reloadScripts: true); return }
         DispatchQueue.global(qos: .utility).async {
             let dirs = discoverProjects(in: root)
             DispatchQueue.main.async {
                 guard request == self.scanID else { return }
                 self.discovered = dirs
-                self.objectWillChange.send()
+                self.rebuildCatalog(reloadScripts: true)
             }
         }
     }
@@ -152,9 +166,47 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
         if dialog.runModal() == .OK, let url = dialog.url { selectRoot(url.path) }
         showPanel()
     }
-    func updateCount() {
+    private func rebuildCatalog(reloadScripts: Bool = false) {
+        let request = UUID()
+        catalogID = request
+        let root = self.root, knownDirs = Array(known.keys)
+        let discovered = self.discovered, excluded = self.excluded
+        let cached = reloadScripts ? [:] : scripts
+        DispatchQueue.global(qos: .utility).async {
+            let dirs = Set(knownDirs.filter { containsProject($0, root: root) })
+                .union(discovered.subtracting(excluded)).sorted()
+            var names = [String: [String]]()
+            for dir in dirs {
+                names[dir] = cached[dir] ?? (package(dir)["scripts"] as? [String: String] ?? [:]).keys.sorted()
+            }
+            DispatchQueue.main.async {
+                guard self.catalogID == request,
+                      self.catalogDirs != dirs || self.scripts != names else { return }
+                self.catalogDirs = dirs
+                self.scripts = names
+                self.updateStopped()
+                self.objectWillChange.send()
+            }
+        }
+    }
+
+    private func updateStopped() {
+        let running = Set(live.map(\.cwd))
+        stopped = catalogDirs.filter { !running.contains($0) }
+    }
+
+    private func synchronizeLive() {
+        live = observed.filter { containsProject($0.cwd, root: root) }
+        updateStopped()
         item.button?.title = String(live.count)
-        objectWillChange.send()
+        var added = false, changed = false
+        for service in live where known[service.cwd] != service.executable {
+            added = added || known[service.cwd] == nil
+            known[service.cwd] = service.executable
+            changed = true
+        }
+        if changed { defaults.set(known, forKey: "projects") }
+        if added { rebuildCatalog() }
     }
     func refresh() {
         guard !scanning else { return }
@@ -163,10 +215,16 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
             let result = Result { try listeners() }, ips = lanIPs()
             DispatchQueue.main.async {
                 self.scanning = false
+                let networkChanged = self.ips != ips
                 self.ips = ips
                 switch result {
                 case .success(let list):
-                    self.observed = list
+                    let servicesChanged = self.observed != list
+                    guard servicesChanged || networkChanged || !self.message.isEmpty else { return }
+                    if servicesChanged {
+                        self.observed = list
+                        self.synchronizeLive()
+                    }
                     for key in Array(self.routes.keys) where !ips.contains(key.address) || !list.contains(where: {
                         $0.pid == key.pid && $0.birth == key.birth && $0.endpoints(ips).contains(where: { $0.address == key.socket })
                     }) {
@@ -174,11 +232,9 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
                         self.routeURLs.removeValue(forKey: key)
                     }
                     self.message = ""
-                    for service in self.live { self.known[service.cwd] = service.executable }
-                    self.defaults.set(self.known, forKey: "projects")
                 case .failure(let error): self.message = "扫描失败 · " + error.localizedDescription
                 }
-                self.updateCount()
+                self.objectWillChange.send()
             }
         }
     }
@@ -186,6 +242,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
         known.removeValue(forKey: dir)
         if discovered.contains(dir) { excluded.insert(dir); defaults.set(Array(excluded), forKey: "excluded") }
         defaults.set(known, forKey: "projects")
+        catalogDirs.removeAll { $0 == dir }
+        scripts.removeValue(forKey: dir)
+        stopped.removeAll { $0 == dir }
+        rebuildCatalog()
         objectWillChange.send()
     }
     func alert(_ title: String, _ detail: String) -> Bool {
@@ -197,8 +257,15 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
         return box.runModal() == .alertFirstButtonReturn
     }
     func stop(_ service: Listener) {
-        guard node_identity(service.pid) == service.birth else { refresh(); return }
-        if kill(service.pid, SIGTERM) != 0 { _ = alert("停止失败", String(cString: strerror(errno))) }
+        guard !stopping.contains(service.birth), node_identity(service.pid) == service.birth else { refresh(); return }
+        guard kill(service.pid, SIGTERM) == 0 else { _ = alert("停止失败", String(cString: strerror(errno))); return }
+        stopping.insert(service.birth)
+        objectWillChange.send()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            self.stopping.remove(service.birth)
+            self.objectWillChange.send()
+            self.refresh()
+        }
         refresh()
     }
     func start(_ dir: String, _ script: String) {
@@ -225,6 +292,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
             task.terminationHandler = { child in
                 DispatchQueue.main.async {
                     self.launching.removeValue(forKey: dir)
+                    self.objectWillChange.send()
                     if child.terminationStatus != 0 && child.terminationStatus != 143 && child.terminationStatus != 15 {
                         _ = self.alert("启动命令已退出", dir + "\n日志：" + log.path)
                     }

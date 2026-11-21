@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-struct Listener {
+struct Listener: Equatable {
     let pid: Int32
     let birth: UInt64
     let cwd: String
