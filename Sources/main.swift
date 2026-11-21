@@ -86,6 +86,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
         item.button?.target = self
         item.button?.action = #selector(togglePanel)
         panel.delegate = self
+        panel.animationBehavior = .none
         panel.level = .popUpMenu
         panel.hasShadow = true
         panel.isOpaque = false
@@ -101,7 +102,16 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
         guard let button = item.button, let window = button.window, let screen = window.screen else { return }
         let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
         panel.setFrame(panelFrame(anchor: anchor, visible: screen.visibleFrame), display: true)
+        let animate = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        panel.alphaValue = animate ? 0 : 1
         panel.makeKeyAndOrderFront(nil)
+        if animate {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.14
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().alphaValue = 1
+            }
+        }
     }
     @objc func togglePanel() {
         if panel.isVisible { panel.orderOut(nil); return }

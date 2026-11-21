@@ -35,6 +35,7 @@ private let jade = Color(red: 0.10, green: 0.50, blue: 0.37)
 
 struct ProjectPanel: View {
     @ObservedObject var bar: Bar
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var stopped: [String] {
         bar.projectDirs.filter { dir in !bar.live.contains { $0.cwd == dir } }.sorted()
     }
@@ -75,8 +76,15 @@ struct ProjectPanel: View {
                         ForEach(bar.live, id: \.birth) { service in serviceRow(service) }
                         if bar.live.isEmpty { empty("暂无运行中的 Node 服务") }
                     }
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: bar.history ? stopped : [])
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: bar.history ? [] : bar.live.map(\.birth))
             }
+            .id(bar.history)
+            .transition(.opacity)
+            .frame(maxHeight: .infinity)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: bar.history)
         }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
