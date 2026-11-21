@@ -29,6 +29,28 @@ func discoverProjects(in root: String) -> Set<String> {
     return result
 }
 
+struct StoppedGroup: Identifiable {
+    let id: String
+    let title: String
+    let projects: [String]
+
+    static func groups(for projects: [String], root: String?) -> [StoppedGroup] {
+        let prefix = root.map { $0 == "/" ? "/" : $0 + "/" }
+        let grouped = Dictionary(grouping: projects) { dir -> String in
+            if dir == root { return dir }
+            if let prefix, dir.hasPrefix(prefix),
+               let first = dir.dropFirst(prefix.count).split(separator: "/", maxSplits: 1).first {
+                return prefix + first
+            }
+            return URL(fileURLWithPath: dir).deletingLastPathComponent().path
+        }
+        return grouped.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.map { path in
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            return StoppedGroup(id: path, title: path == root ? "工作区根目录" : name, projects: grouped[path] ?? [])
+        }
+    }
+}
+
 func panelFrame(anchor: CGRect, visible: CGRect) -> CGRect {
     let width = min(454, visible.width), height = min(410, visible.height - 8)
     let x = min(max(anchor.midX - width / 2, visible.minX), visible.maxX - width)

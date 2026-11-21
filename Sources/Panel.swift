@@ -68,7 +68,12 @@ struct ProjectPanel: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     if bar.history {
-                        ForEach(bar.stopped, id: \.self) { dir in historyRow(dir) }
+                        ForEach(bar.stoppedGroups) { group in
+                            groupHeader(group)
+                            if bar.expandedGroups.contains(group.id) {
+                                ForEach(group.projects, id: \.self) { dir in historyRow(dir) }
+                            }
+                        }
                         if bar.stopped.isEmpty { empty("暂无已停止的项目") }
                     } else {
                         ForEach(bar.live, id: \.birth) { service in serviceRow(service) }
@@ -119,6 +124,31 @@ struct ProjectPanel: View {
             }
         }.padding(12).background(.background, in: RoundedRectangle(cornerRadius: 10))
         .help("PID " + String(service.pid))
+    }
+    func groupHeader(_ group: StoppedGroup) -> some View {
+        let expanded = bar.expandedGroups.contains(group.id)
+        return Button {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
+                if expanded { bar.expandedGroups.remove(group.id) }
+                else { bar.expandedGroups.insert(group.id) }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.right").rotationEffect(.degrees(expanded ? 90 : 0))
+                    .font(.caption.bold()).foregroundStyle(.secondary)
+                Image(systemName: "folder").foregroundStyle(jade)
+                Text(group.title).font(.headline).lineLimit(1)
+                Spacer()
+                Text(String(group.projects.count)).monospacedDigit().foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12).frame(minHeight: 34)
+            .background(.background, in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(group.title + "，" + String(group.projects.count) + " 个已停止项目")
+        .accessibilityValue(expanded ? "已展开" : "已收起")
+        .help(group.id)
     }
     func historyRow(_ dir: String) -> some View {
         let scripts = bar.scripts[dir] ?? []

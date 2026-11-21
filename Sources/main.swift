@@ -20,6 +20,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
     var observed: [Listener] = []
     private(set) var live: [Listener] = []
     private(set) var stopped: [String] = []
+    private(set) var stoppedGroups: [StoppedGroup] = []
+    @Published var expandedGroups = Set<String>()
     private var catalogDirs: [String] = []
     private(set) var scripts: [String: [String]] = [:]
     private var catalogID = UUID()
@@ -193,6 +195,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
     private func updateStopped() {
         let running = Set(live.map(\.cwd))
         stopped = catalogDirs.filter { !running.contains($0) }
+        stoppedGroups = StoppedGroup.groups(for: stopped, root: root)
     }
 
     private func synchronizeLive() {
@@ -244,7 +247,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableOb
         defaults.set(known, forKey: "projects")
         catalogDirs.removeAll { $0 == dir }
         scripts.removeValue(forKey: dir)
-        stopped.removeAll { $0 == dir }
+        updateStopped()
         rebuildCatalog()
         objectWillChange.send()
     }
