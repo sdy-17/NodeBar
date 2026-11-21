@@ -1,0 +1,138 @@
+import SwiftUI
+
+struct Endpoint: Identifiable {
+    let address: String
+    let local: Bool
+    var id: String { address }
+}
+
+extension Listener {
+    func endpoints(_ ips: [String]) -> [Endpoint] {
+        var found = [String: Endpoint]()
+        for socket in sockets {
+            guard let split = socket.lastIndex(of: ":") else { continue }
+            let host = String(socket[..<split]), suffix = String(socket[split...])
+            let hosts: [String]
+            switch host {
+            case "*", "0.0.0.0": hosts = ips.isEmpty ? ["127.0.0.1"] : ips
+            case "[::]":
+                hosts = lanIPv6Addresses()
+            default: hosts = [host]
+            }
+            for host in hosts {
+                let address = host + suffix
+                found[address] = Endpoint(address: address, local: host.hasPrefix("127.") || host == "[::1]")
+            }
+        }
+        return found.values.sorted {
+            if $0.local != $1.local { return !$0.local }
+            return $0.address.localizedStandardCompare($1.address) == .orderedAscending
+        }
+    }
+}
+
+private let jade = Color(red: 0.10, green: 0.50, blue: 0.37)
+
+struct ProjectPanel: View {
+    @ObservedObject var bar: Bar
+    var stopped: [String] {
+        bar.projectDirs.filter { dir in !bar.live.contains { $0.cwd == dir } }.sorted()
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "terminal.fill").font(.title2).foregroundStyle(.white)
+                    .frame(width: 38, height: 38).background(jade, in: RoundedRectangle(cornerRadius: 11))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("NodeBar").font(.system(size: 20, weight: .bold, design: .rounded))
+                    Text(bar.ips.isEmpty ? "暂无局域网 IPv4 地址" : "局域网  " + bar.ips.joined(separator: " · "))
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { bar.refresh(); bar.discover() } label: { Image(systemName: "arrow.clockwise") }.help("刷新")
+                Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }.help("退出 NodeBar")
+            }.buttonStyle(.borderless)
+            HStack(spacing: 6) {
+                Button { bar.chooseRoot() } label: {
+                    Label(bar.root.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "选择监控目录", systemImage: "folder")
+                        .lineLimit(1).truncationMode(.middle)
+                }.help(bar.root ?? "选择项目或工作区目录")
+                Spacer()
+                if bar.root != nil {
+                    Button("显示全部") { bar.selectRoot(nil) }.controlSize(.small)
+                }
+            }
+            Picker("项目", selection: $bar.history) {
+                Text("运行中  \(bar.live.count)").tag(false)
+                Text("已停止  \(stopped.count)").tag(true)
+            }.pickerStyle(.segmented).labelsHidden()
+            if !bar.message.isEmpty { Text(bar.message).font(.caption).foregroundStyle(.secondary) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    if bar.history {
+                        ForEach(stopped, id: \.self) { dir in historyRow(dir) }
+                        if stopped.isEmpty { empty("暂无已停止的项目") }
+                    } else {
+                        ForEach(bar.live, id: \.birth) { service in serviceRow(service) }
+                        if bar.live.isEmpty { empty("暂无运行中的 Node 服务") }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+    func empty(_ title: String) -> some View {
+        Text(title).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 48)
+    }
+    func directory(_ dir: String) -> some View {
+        Button { NSWorkspace.shared.open(URL(fileURLWithPath: dir)) } label: {
+            Label((dir as NSString).abbreviatingWithTildeInPath, systemImage: "folder")
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+        }.buttonStyle(.plain).help(dir)
+    }
+    func serviceRow(_ service: Listener) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Circle().fill(jade).frame(width: 7, height: 7)
+                Text(URL(fileURLWithPath: service.cwd).lastPathComponent).font(.headline).lineLimit(1)
+                Spacer()
+                Button { bar.stop(service) } label: { Label("停止", systemImage: "stop.fill") }
+                    .controlSize(.small).foregroundStyle(.red)
+            }
+            directory(service.cwd)
+            Divider()
+            ForEach(service.endpoints(bar.ips)) { endpoint in
+                HStack {
+                    Text(bar.displayedAddress(endpoint, service: service)).font(.system(size: 12, design: .monospaced))
+                        .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button(endpoint.local ? "本机打开 ↗" : "局域网打开 ↗") {
+                        bar.openEndpoint(endpoint, service: service)
+                    }.buttonStyle(.borderedProminent).tint(jade).controlSize(.small)
+                }
+            }
+        }.padding(12).background(.background, in: RoundedRectangle(cornerRadius: 10))
+        .help("PID " + String(service.pid))
+    }
+    func historyRow(_ dir: String) -> some View {
+        let scripts = (package(dir)["scripts"] as? [String: String] ?? [:]).keys.sorted()
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(URL(fileURLWithPath: dir).lastPathComponent).font(.headline)
+                Spacer()
+                Button { bar.forget(dir) } label: { Image(systemName: "minus.circle") }.help("移除此记录")
+            }
+            directory(dir)
+            if bar.launching[dir] != nil { Text("正在运行启动命令").font(.caption) }
+            else if scripts.isEmpty { Text("此目录无启动脚本").font(.caption).foregroundStyle(.secondary) }
+            else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 88))], alignment: .leading) {
+                    ForEach(scripts, id: \.self) { script in
+                        Button { bar.start(dir, script) } label: { Label(script, systemImage: "play.fill").lineLimit(1) }
+                            .controlSize(.small).help("运行 " + script)
+                    }
+                }
+            }
+        }.padding(12).background(.background, in: RoundedRectangle(cornerRadius: 10))
+    }
+}
