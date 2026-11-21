@@ -49,19 +49,18 @@ struct ProjectPanel: View {
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button { bar.chooseRoot() } label: {
+                    Image(systemName: bar.root == nil ? "folder" : "folder.fill")
+                }
+                .accessibilityLabel("选择监控目录")
+                .help(bar.root.map { "当前目录：" + $0 + "（右键可显示全部）" } ?? "选择监控目录")
+                .contextMenu {
+                    Button("选择监控目录…") { bar.chooseRoot() }
+                    if bar.root != nil { Button("显示全部") { bar.selectRoot(nil) } }
+                }
                 Button { bar.refresh(); bar.discover() } label: { Image(systemName: "arrow.clockwise") }.help("刷新")
                 Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }.help("退出 NodeBar")
             }.buttonStyle(.borderless)
-            HStack(spacing: 6) {
-                Button { bar.chooseRoot() } label: {
-                    Label(bar.root.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "选择监控目录", systemImage: "folder")
-                        .lineLimit(1).truncationMode(.middle)
-                }.help(bar.root ?? "选择项目或工作区目录")
-                Spacer()
-                if bar.root != nil {
-                    Button("显示全部") { bar.selectRoot(nil) }.controlSize(.small)
-                }
-            }
             Picker("项目", selection: $bar.history) {
                 Text("运行中  \(bar.live.count)").tag(false)
                 Text("已停止  \(stopped.count)").tag(true)
